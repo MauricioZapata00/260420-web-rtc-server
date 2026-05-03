@@ -1,0 +1,14 @@
+/target
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+
+# Claude Code
+.claude/
+
+# Specs / user stories
+specs/
