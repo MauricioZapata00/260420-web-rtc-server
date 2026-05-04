@@ -2703,6 +2703,7 @@ dependencies = [
  "http-body-util",
  "mockall",
  "schemars",
+ "sdp",
  "serde",
  "serde_json",
  "serial_test",

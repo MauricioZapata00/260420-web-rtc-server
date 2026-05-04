@@ -6,6 +6,9 @@ pub fn parse_sdp_offer(raw: &str) -> Result<SdpOffer, AppError> {
     if raw.is_empty() {
         return Err(AppError::SdpParseFailed("SDP must not be empty".to_string()));
     }
+    let mut cursor = std::io::Cursor::new(raw.as_bytes());
+    sdp::SessionDescription::unmarshal(&mut cursor)
+        .map_err(|e| AppError::SdpParseFailed(e.to_string()))?;
     Ok(SdpOffer { sdp: raw.to_string() })
 }
 
@@ -23,16 +26,33 @@ mod tests {
     use super::*;
     use crate::types::IceCandidate;
 
+    const VALID_SDP: &str = "v=0\r\n\
+        o=- 0 0 IN IP4 127.0.0.1\r\n\
+        s=-\r\n\
+        t=0 0\r\n";
+
     #[test]
     fn parse_sdp_offer_valid() {
-        let result = parse_sdp_offer("v=0\r\n");
+        let result = parse_sdp_offer(VALID_SDP);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().sdp, "v=0\r\n");
+        assert_eq!(result.unwrap().sdp, VALID_SDP);
     }
 
     #[test]
     fn parse_sdp_offer_empty() {
         let result = parse_sdp_offer("");
+        assert!(matches!(result, Err(AppError::SdpParseFailed(_))));
+    }
+
+    #[test]
+    fn parse_sdp_offer_garbage() {
+        let result = parse_sdp_offer("this is not an sdp");
+        assert!(matches!(result, Err(AppError::SdpParseFailed(_))));
+    }
+
+    #[test]
+    fn parse_sdp_offer_incomplete() {
+        let result = parse_sdp_offer("v=0\r\n");
         assert!(matches!(result, Err(AppError::SdpParseFailed(_))));
     }
 

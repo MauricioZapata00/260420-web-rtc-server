@@ -75,6 +75,8 @@ mod tests {
 
     use crate::webrtc::peer::MockPeerOps;
 
+    const VALID_SDP: &str = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n";
+
     fn build_router(mock: MockPeerOps) -> Router {
         router::<MockPeerOps>().with_state(Arc::new(mock))
     }
@@ -95,14 +97,14 @@ mod tests {
         let mut mock = MockPeerOps::new();
         mock.expect_set_remote_description().returning(|_| Ok(()));
         mock.expect_create_answer()
-            .returning(|| Ok(SdpAnswer { sdp: "v=0\r\n".to_string() }));
+            .returning(|| Ok(SdpAnswer { sdp: VALID_SDP.to_string() }));
 
-        let response = build_router(mock).oneshot(offer_request("v=0\r\n")).await.unwrap();
+        let response = build_router(mock).oneshot(offer_request(VALID_SDP)).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let answer: SdpAnswer = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(answer.sdp, "v=0\r\n");
+        assert_eq!(answer.sdp, VALID_SDP);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -112,7 +114,7 @@ mod tests {
         mock.expect_set_remote_description()
             .returning(|_| Err(AppError::PeerConnectionFailed("fail".to_string())));
 
-        let response = build_router(mock).oneshot(offer_request("v=0\r\n")).await.unwrap();
+        let response = build_router(mock).oneshot(offer_request(VALID_SDP)).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
