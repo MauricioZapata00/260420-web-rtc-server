@@ -5,7 +5,7 @@ use std::sync::Arc;
 use ::webrtc::{
     api::APIBuilder,
     data_channel::{data_channel_message::DataChannelMessage, RTCDataChannel},
-    ice_transport::ice_candidate::RTCIceCandidateInit,
+    ice_transport::{ice_candidate::RTCIceCandidateInit, ice_server::RTCIceServer},
     peer_connection::{
         configuration::RTCConfiguration, sdp::session_description::RTCSessionDescription,
         RTCPeerConnection,
@@ -33,9 +33,19 @@ pub struct WebRtcPeer {
 
 impl WebRtcPeer {
     pub async fn new() -> Result<Self, AppError> {
+        let config = RTCConfiguration {
+            ice_servers: vec![RTCIceServer {
+                urls: vec![
+                    "stun:stun.l.google.com:19302".to_string(),
+                    "stun:stun1.l.google.com:19302".to_string(),
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
         let api = APIBuilder::new().build();
         let pc = api
-            .new_peer_connection(RTCConfiguration::default())
+            .new_peer_connection(config)
             .await
             .map_err(|e| AppError::PeerConnectionFailed(e.to_string()))?;
         Ok(Self { pc: Arc::new(pc) })
