@@ -15,6 +15,7 @@ use ::webrtc::{
 use crate::types::{AppError, IceCandidate, SdpAnswer, SdpOffer};
 
 #[cfg_attr(test, mockall::automock)]
+#[async_trait::async_trait]
 pub trait PeerOps: Send + Sync {
     async fn set_remote_description(&self, sdp: SdpOffer) -> Result<(), AppError>;
     async fn create_answer(&self) -> Result<SdpAnswer, AppError>;
@@ -41,6 +42,7 @@ impl WebRtcPeer {
     }
 }
 
+#[async_trait::async_trait]
 impl PeerOps for WebRtcPeer {
     async fn set_remote_description(&self, sdp: SdpOffer) -> Result<(), AppError> {
         let offer = RTCSessionDescription::offer(sdp.sdp)
