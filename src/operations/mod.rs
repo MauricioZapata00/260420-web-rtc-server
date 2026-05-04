@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::types::{AppError, IceCandidate, SdpOffer};
 
 pub fn parse_sdp_offer(raw: &str) -> Result<SdpOffer, AppError> {
