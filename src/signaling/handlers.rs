@@ -9,11 +9,12 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use tokio::sync::oneshot;
 
 use crate::{
     operations::{parse_sdp_offer, validate_ice_candidate},
-    session::SessionRegistry,
-    types::{AppError, IceCandidate, SdpAnswer, SdpOffer},
+    session::{PeerHandle, SessionRegistry},
+    types::{AppError, IceCandidate, OfferResponse, PeerId, SdpOffer},
     webrtc::peer::PeerOps,
 };
 
@@ -40,11 +41,17 @@ pub fn router<P: PeerOps + 'static>() -> Router<AppState<P>> {
 pub async fn offer<P: PeerOps + 'static>(
     State(state): State<AppState<P>>,
     Json(body): Json<SdpOffer>,
-) -> Result<Json<SdpAnswer>, AppError> {
+) -> Result<Json<OfferResponse>, AppError> {
     let validated = parse_sdp_offer(&body.sdp)?;
     state.peer.set_remote_description(validated).await?;
     let answer = state.peer.create_answer().await?;
-    Ok(Json(answer))
+
+    let peer_id = PeerId::new();
+    let (disconnect_tx, _) = oneshot::channel::<()>();
+    state.registry.register(peer_id, PeerHandle { data_channel: None, disconnect_tx });
+    state.peer.on_data_channel(peer_id, Arc::clone(&state.registry)).await?;
+
+    Ok(Json(OfferResponse { peer_id, sdp: answer.sdp }))
 }
 
 pub async fn ws_ice<P: PeerOps + 'static>(
@@ -88,7 +95,7 @@ mod tests {
     use serial_test::serial;
     use tower::ServiceExt;
 
-    use crate::webrtc::peer::MockPeerOps;
+    use crate::{types::SdpAnswer, webrtc::peer::MockPeerOps};
 
     const VALID_SDP: &str = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n";
 
@@ -112,18 +119,20 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
-    async fn offer_happy_path() {
+    async fn offer_returns_peer_id_and_sdp() {
         let mut mock = MockPeerOps::new();
         mock.expect_set_remote_description().returning(|_| Ok(()));
         mock.expect_create_answer()
             .returning(|| Ok(SdpAnswer { sdp: VALID_SDP.to_string() }));
+        mock.expect_on_data_channel().returning(|_, _| Ok(()));
 
         let response = build_router(mock).oneshot(offer_request(VALID_SDP)).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        let answer: SdpAnswer = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(answer.sdp, VALID_SDP);
+        let body: OfferResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body.sdp, VALID_SDP);
+        assert_eq!(body.peer_id.0.get_version(), Some(uuid::Version::Random));
     }
 
     #[tokio::test(flavor = "multi_thread")]

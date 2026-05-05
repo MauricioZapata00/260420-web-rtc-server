@@ -6,13 +6,26 @@ pub use error::AppError;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct PeerId(pub Uuid);
 
 impl PeerId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OfferResponse {
+    pub peer_id: PeerId,
+    pub sdp: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub from: PeerId,
+    pub text: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -91,5 +104,34 @@ mod tests {
         let id = PeerId::new();
         let copy = id;
         assert_eq!(id, copy);
+    }
+
+    #[test]
+    fn peer_id_serialises_as_plain_uuid_string() {
+        let id = PeerId::new();
+        let json = serde_json::to_string(&id).unwrap();
+        let decoded: PeerId = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, decoded);
+        assert!(!json.contains('{'));
+    }
+
+    #[test]
+    fn offer_response_json_round_trip() {
+        let id = PeerId::new();
+        let resp = OfferResponse { peer_id: id, sdp: "v=0\r\n".to_string() };
+        let json = serde_json::to_string(&resp).unwrap();
+        let decoded: OfferResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.peer_id, id);
+        assert_eq!(decoded.sdp, "v=0\r\n");
+    }
+
+    #[test]
+    fn chat_message_json_includes_from_and_text() {
+        let id = PeerId::new();
+        let msg = ChatMessage { from: id, text: "hello".to_string() };
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
+        assert_eq!(json["text"], "hello");
+        assert!(json.get("from").is_some());
     }
 }

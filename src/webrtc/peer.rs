@@ -12,7 +12,10 @@ use ::webrtc::{
     },
 };
 
-use crate::types::{AppError, IceCandidate, SdpAnswer, SdpOffer};
+use crate::{
+    session::SessionRegistry,
+    types::{AppError, ChatMessage, IceCandidate, PeerId, SdpAnswer, SdpOffer},
+};
 
 #[cfg_attr(test, mockall::automock)]
 #[async_trait::async_trait]
@@ -21,9 +24,11 @@ pub trait PeerOps: Send + Sync {
     async fn create_answer(&self) -> Result<SdpAnswer, AppError>;
     async fn add_ice_candidate(&self, candidate: IceCandidate) -> Result<(), AppError>;
     async fn on_connection_state_change(&self) -> Result<(), AppError>;
-    async fn on_data_channel(&self) -> Result<(), AppError>;
-    async fn on_message(&self) -> Result<(), AppError>;
-    async fn on_close(&self) -> Result<(), AppError>;
+    async fn on_data_channel(
+        &self,
+        peer_id: PeerId,
+        registry: Arc<SessionRegistry>,
+    ) -> Result<(), AppError>;
     async fn on_track(&self) -> Result<(), AppError>;
 }
 
@@ -98,30 +103,40 @@ impl PeerOps for WebRtcPeer {
         Ok(())
     }
 
-    async fn on_data_channel(&self) -> Result<(), AppError> {
-        self.pc
-            .on_data_channel(Box::new(|dc: Arc<RTCDataChannel>| {
-                let label = dc.label().to_string();
-                tracing::info!("data channel opened: {label}");
-                Box::pin(async move {
-                    dc.on_message(Box::new(|msg: DataChannelMessage| {
-                        tracing::info!("message received ({} bytes)", msg.data.len());
-                        Box::pin(async {})
-                    }));
-                    dc.on_close(Box::new(|| {
-                        tracing::info!("data channel closed");
-                        Box::pin(async {})
-                    }));
-                })
-            }));
-        Ok(())
-    }
+    async fn on_data_channel(
+        &self,
+        peer_id: PeerId,
+        registry: Arc<SessionRegistry>,
+    ) -> Result<(), AppError> {
+        self.pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
+            let registry = Arc::clone(&registry);
+            tracing::info!("data channel opened: {}", dc.label());
+            Box::pin(async move {
+                registry.set_data_channel(peer_id, Arc::clone(&dc));
 
-    async fn on_message(&self) -> Result<(), AppError> {
-        Ok(())
-    }
+                let registry_msg = Arc::clone(&registry);
+                dc.on_message(Box::new(move |msg: DataChannelMessage| {
+                    let registry = Arc::clone(&registry_msg);
+                    Box::pin(async move {
+                        if msg.is_string {
+                            let text = String::from_utf8_lossy(&msg.data).to_string();
+                            let json =
+                                serde_json::to_string(&ChatMessage { from: peer_id, text })
+                                    .unwrap_or_default();
+                            registry.broadcast_text(peer_id, &json);
+                        }
+                    })
+                }));
 
-    async fn on_close(&self) -> Result<(), AppError> {
+                let registry_close = Arc::clone(&registry);
+                dc.on_close(Box::new(move || {
+                    let registry = Arc::clone(&registry_close);
+                    Box::pin(async move {
+                        registry.deregister(peer_id);
+                    })
+                }));
+            })
+        }));
         Ok(())
     }
 
@@ -151,6 +166,14 @@ mod tests {
     async fn on_track_registers_ok() {
         let peer = WebRtcPeer::new().await.unwrap();
         assert!(peer.on_track().await.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn on_data_channel_registers_ok() {
+        let peer = WebRtcPeer::new().await.unwrap();
+        let registry = Arc::new(SessionRegistry::new());
+        assert!(peer.on_data_channel(PeerId::new(), registry).await.is_ok());
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -189,5 +212,17 @@ mod tests {
             })
             .await;
         assert!(matches!(result, Err(AppError::IceCandidateFailed(_))));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn on_data_channel_error_via_mock() {
+        let mut mock = MockPeerOps::new();
+        mock.expect_on_data_channel()
+            .returning(|_, _| Err(AppError::SignalingError("fail".to_string())));
+        let result = mock
+            .on_data_channel(PeerId::new(), Arc::new(SessionRegistry::new()))
+            .await;
+        assert!(matches!(result, Err(AppError::SignalingError(_))));
     }
 }
