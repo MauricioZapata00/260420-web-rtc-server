@@ -12,31 +12,46 @@ use axum::{
 
 use crate::{
     operations::{parse_sdp_offer, validate_ice_candidate},
+    session::SessionRegistry,
     types::{AppError, IceCandidate, SdpAnswer, SdpOffer},
     webrtc::peer::PeerOps,
 };
 
-pub fn router<P: PeerOps + 'static>() -> Router<Arc<P>> {
+pub struct AppState<P> {
+    pub peer: Arc<P>,
+    pub registry: Arc<SessionRegistry>,
+}
+
+impl<P> Clone for AppState<P> {
+    fn clone(&self) -> Self {
+        Self {
+            peer: Arc::clone(&self.peer),
+            registry: Arc::clone(&self.registry),
+        }
+    }
+}
+
+pub fn router<P: PeerOps + 'static>() -> Router<AppState<P>> {
     Router::new()
         .route("/offer", post(offer::<P>))
         .route("/ws/ice", get(ws_ice::<P>))
 }
 
 pub async fn offer<P: PeerOps + 'static>(
-    State(peer): State<Arc<P>>,
+    State(state): State<AppState<P>>,
     Json(body): Json<SdpOffer>,
 ) -> Result<Json<SdpAnswer>, AppError> {
     let validated = parse_sdp_offer(&body.sdp)?;
-    peer.set_remote_description(validated).await?;
-    let answer = peer.create_answer().await?;
+    state.peer.set_remote_description(validated).await?;
+    let answer = state.peer.create_answer().await?;
     Ok(Json(answer))
 }
 
 pub async fn ws_ice<P: PeerOps + 'static>(
     ws: WebSocketUpgrade,
-    State(peer): State<Arc<P>>,
+    State(state): State<AppState<P>>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_ice_socket(socket, peer))
+    ws.on_upgrade(move |socket| handle_ice_socket(socket, state.peer))
 }
 
 async fn handle_ice_socket<P: PeerOps>(mut socket: WebSocket, peer: Arc<P>) {
@@ -78,7 +93,11 @@ mod tests {
     const VALID_SDP: &str = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n";
 
     fn build_router(mock: MockPeerOps) -> Router {
-        router::<MockPeerOps>().with_state(Arc::new(mock))
+        let state = AppState {
+            peer: Arc::new(mock),
+            registry: Arc::new(SessionRegistry::new()),
+        };
+        router::<MockPeerOps>().with_state(state)
     }
 
     fn offer_request(sdp: &str) -> Request<Body> {

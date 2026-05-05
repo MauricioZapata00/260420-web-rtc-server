@@ -4,6 +4,16 @@ pub mod error;
 pub use error::AppError;
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PeerId(pub Uuid);
+
+impl PeerId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SdpOffer {
@@ -67,5 +77,19 @@ mod tests {
         for err in &errors {
             assert!(!err.to_string().is_empty());
         }
+    }
+
+    #[test]
+    fn peer_id_new_produces_unique_ids() {
+        let a = PeerId::new();
+        let b = PeerId::new();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn peer_id_copy_and_eq() {
+        let id = PeerId::new();
+        let copy = id;
+        assert_eq!(id, copy);
     }
 }

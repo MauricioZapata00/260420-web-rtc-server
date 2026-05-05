@@ -1,8 +1,11 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use crate::{signaling::handlers, types::AppError, webrtc::peer::WebRtcPeer};
-
-type SharedState = Arc<WebRtcPeer>;
+use crate::{
+    session::SessionRegistry,
+    signaling::handlers::{self, AppState},
+    types::AppError,
+    webrtc::peer::WebRtcPeer,
+};
 
 pub struct AppConfig {
     pub bind_addr: SocketAddr,
@@ -21,7 +24,10 @@ impl AppConfig {
 pub async fn run() -> Result<(), AppError> {
     let config = AppConfig::from_env();
     let peer = WebRtcPeer::new().await?;
-    let state: SharedState = Arc::new(peer);
+    let state = AppState {
+        peer: Arc::new(peer),
+        registry: Arc::new(SessionRegistry::new()),
+    };
     let router = handlers::router::<WebRtcPeer>().with_state(state);
     let listener = tokio::net::TcpListener::bind(config.bind_addr)
         .await

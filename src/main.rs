@@ -1,5 +1,6 @@
 mod operations;
 mod server;
+mod session;
 mod signaling;
 mod types;
 mod webrtc;
