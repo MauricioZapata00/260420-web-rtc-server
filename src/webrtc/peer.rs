@@ -1,18 +1,21 @@
 #![allow(dead_code)]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+use tokio::sync::mpsc;
 
 use ::webrtc::{
     api::APIBuilder,
     data_channel::{data_channel_message::DataChannelMessage, RTCDataChannel},
-    ice_transport::{ice_candidate::RTCIceCandidateInit, ice_server::RTCIceServer},
+    ice_transport::{
+        ice_candidate::{RTCIceCandidate, RTCIceCandidateInit},
+        ice_server::RTCIceServer,
+    },
     peer_connection::{
         configuration::RTCConfiguration, sdp::session_description::RTCSessionDescription,
         RTCPeerConnection,
     },
-    track::track_local::{
-        track_local_static_rtp::TrackLocalStaticRTP, TrackLocalWriter,
-    },
+    track::track_local::{track_local_static_rtp::TrackLocalStaticRTP, TrackLocalWriter},
 };
 
 use crate::{
@@ -39,6 +42,7 @@ pub trait PeerOps: Send + Sync {
         registry: Arc<SessionRegistry>,
     ) -> Result<(), AppError>;
     fn peer_connection(&self) -> Arc<RTCPeerConnection>;
+    async fn subscribe_ice_candidates(&self) -> mpsc::Receiver<Option<IceCandidate>>;
 }
 
 fn make_broadcast_payload(peer_id: PeerId, text: String) -> String {
@@ -75,6 +79,7 @@ async fn handle_data_channel_open(
 
 pub struct WebRtcPeer {
     pc: Arc<RTCPeerConnection>,
+    ice_tx: Arc<Mutex<Option<mpsc::Sender<Option<IceCandidate>>>>>,
 }
 
 impl WebRtcPeer {
@@ -94,7 +99,10 @@ impl WebRtcPeer {
             .new_peer_connection(config)
             .await
             .map_err(|e| AppError::PeerConnectionFailed(e.to_string()))?;
-        Ok(Self { pc: Arc::new(pc) })
+        Ok(Self {
+            pc: Arc::new(pc),
+            ice_tx: Arc::new(Mutex::new(None)),
+        })
     }
 }
 
@@ -218,6 +226,35 @@ impl PeerOps for WebRtcPeer {
     fn peer_connection(&self) -> Arc<RTCPeerConnection> {
         Arc::clone(&self.pc)
     }
+
+    async fn subscribe_ice_candidates(&self) -> mpsc::Receiver<Option<IceCandidate>> {
+        let (tx, rx) = mpsc::channel(32);
+        *self.ice_tx.lock().unwrap() = Some(tx);
+
+        let ice_tx = Arc::clone(&self.ice_tx);
+        self.pc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
+            let ice_tx = Arc::clone(&ice_tx);
+            Box::pin(async move {
+                let mapped = candidate
+                    .and_then(|c| c.to_json().ok())
+                    .map(|init| IceCandidate {
+                        candidate: init.candidate,
+                        sdp_mid: init.sdp_mid,
+                        sdp_mline_index: init.sdp_mline_index,
+                    });
+                let done = mapped.is_none();
+                let tx = ice_tx.lock().unwrap().clone();
+                if let Some(tx) = tx {
+                    let _ = tx.send(mapped).await;
+                    if done {
+                        ice_tx.lock().unwrap().take();
+                    }
+                }
+            })
+        }));
+
+        rx
+    }
 }
 
 #[cfg(test)]
@@ -320,6 +357,30 @@ mod tests {
             .on_track(PeerId::new(), Arc::new(SessionRegistry::new()))
             .await;
         assert!(matches!(result, Err(AppError::SignalingError(_))));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn subscribe_ice_candidates_delivers_candidate_to_receiver() {
+        let (tx, rx) = mpsc::channel::<Option<IceCandidate>>(4);
+        let shared_rx = Arc::new(std::sync::Mutex::new(Some(rx)));
+
+        let mut mock = MockPeerOps::new();
+        mock.expect_subscribe_ice_candidates()
+            .returning(move || shared_rx.lock().unwrap().take().unwrap());
+
+        let mut receiver = mock.subscribe_ice_candidates().await;
+
+        let cand = IceCandidate {
+            candidate: "candidate:1 1 UDP 2130706431 192.168.1.1 54321 typ host".to_string(),
+            sdp_mid: Some("0".to_string()),
+            sdp_mline_index: Some(0),
+        };
+        tx.send(Some(cand.clone())).await.unwrap();
+
+        let received = receiver.recv().await.unwrap();
+        assert!(received.is_some());
+        assert_eq!(received.unwrap().candidate, cand.candidate);
     }
 
     #[test]

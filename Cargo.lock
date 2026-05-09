@@ -2738,6 +2738,7 @@ dependencies = [
  "serial_test",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite",
  "tower",
  "tracing",
  "tracing-subscriber",

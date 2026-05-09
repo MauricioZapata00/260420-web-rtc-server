@@ -38,7 +38,7 @@ pub struct SdpAnswer {
     pub sdp: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IceCandidate {
     pub candidate: String,
     pub sdp_mid: Option<String>,
@@ -49,6 +49,7 @@ pub struct IceCandidate {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum IceWsMessage {
     Candidate(IceCandidate),
+    Done,
     Offer(SdpOffer),
     Answer(SdpAnswer),
 }
@@ -171,6 +172,16 @@ mod tests {
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
         assert_eq!(json["type"], "answer");
+    }
+
+    #[test]
+    fn ice_ws_message_done_serializes_to_type_done() {
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&IceWsMessage::Done).unwrap()).unwrap();
+        assert_eq!(json["type"], "done");
+        assert!(json.get("data").is_none(), "Done must not have a data field");
+        let decoded: IceWsMessage = serde_json::from_value(json).unwrap();
+        assert!(matches!(decoded, IceWsMessage::Done));
     }
 
     #[test]

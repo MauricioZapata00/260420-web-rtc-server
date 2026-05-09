@@ -83,8 +83,9 @@ pub async fn ws_ice<P: PeerOps + 'static>(
     Query(query): Query<WsQuery>,
     State(state): State<AppState<P>>,
 ) -> impl IntoResponse {
+    let ice_rx = state.peer.subscribe_ice_candidates().await;
     ws.on_upgrade(move |socket| {
-        handle_ice_socket(socket, state.peer, state.registry, query.peer_id)
+        handle_ice_socket(socket, state.peer, state.registry, query.peer_id, ice_rx)
     })
 }
 
@@ -93,6 +94,7 @@ async fn handle_ice_socket<P: PeerOps>(
     peer: Arc<P>,
     registry: Arc<SessionRegistry>,
     peer_id: Option<PeerId>,
+    mut ice_rx: mpsc::Receiver<Option<IceCandidate>>,
 ) {
     let (mut sink, mut stream) = socket.split();
     let (ws_tx, mut ws_rx) = mpsc::unbounded_channel::<IceWsMessage>();
@@ -131,7 +133,7 @@ async fn handle_ice_socket<P: PeerOps>(
                                 }
                             }
                         }
-                        IceWsMessage::Offer(_) => {}
+                        IceWsMessage::Offer(_) | IceWsMessage::Done => {}
                     }
                 } else if let Ok(candidate) = serde_json::from_str::<IceCandidate>(&text) {
                     if validate_ice_candidate(&candidate).is_ok() {
@@ -146,6 +148,22 @@ async fn handle_ice_socket<P: PeerOps>(
                 let Ok(json) = serde_json::to_string(&msg) else { continue };
                 if sink.send(Message::Text(json.into())).await.is_err() {
                     break;
+                }
+            }
+            candidate = ice_rx.recv() => {
+                match candidate {
+                    Some(Some(c)) => {
+                        let msg = IceWsMessage::Candidate(c);
+                        let Ok(json) = serde_json::to_string(&msg) else { continue };
+                        if sink.send(Message::Text(json.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(None) | None => {
+                        let Ok(json) = serde_json::to_string(&IceWsMessage::Done) else { break };
+                        let _ = sink.send(Message::Text(json.into())).await;
+                        break;
+                    }
                 }
             }
         }
@@ -163,9 +181,24 @@ mod tests {
     use serial_test::serial;
     use tower::ServiceExt;
 
+    use std::time::Duration;
+
     use ::webrtc::{api::APIBuilder, peer_connection::configuration::RTCConfiguration};
+    use tokio_tungstenite::tungstenite::Message as WsMsg;
 
     use crate::{types::SdpAnswer, webrtc::peer::MockPeerOps};
+
+    async fn spawn_ws_server(mock: MockPeerOps) -> std::net::SocketAddr {
+        let state = AppState {
+            peer: Arc::new(mock),
+            registry: Arc::new(SessionRegistry::new()),
+        };
+        let app = router::<MockPeerOps>().with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.ok() });
+        addr
+    }
 
     const VALID_SDP: &str = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n";
 
@@ -266,5 +299,121 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn ws_ice_forwards_server_candidate_to_browser() {
+        let (tx, rx) = mpsc::channel::<Option<IceCandidate>>(4);
+        let shared_rx = Arc::new(std::sync::Mutex::new(Some(rx)));
+
+        let cand = IceCandidate {
+            candidate: "candidate:1 1 UDP 2130706431 10.0.0.1 12345 typ host".to_string(),
+            sdp_mid: Some("0".to_string()),
+            sdp_mline_index: Some(0),
+        };
+        tx.send(Some(cand.clone())).await.unwrap();
+
+        let mut mock = MockPeerOps::new();
+        mock.expect_subscribe_ice_candidates()
+            .returning(move || shared_rx.lock().unwrap().take().unwrap());
+
+        let addr = spawn_ws_server(mock).await;
+        let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/ice"))
+            .await
+            .unwrap();
+        let (_, mut ws_rx) = ws.split();
+
+        let msg = tokio::time::timeout(Duration::from_secs(2), ws_rx.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let text = match msg {
+            WsMsg::Text(t) => t.to_string(),
+            other => panic!("expected text frame, got {other:?}"),
+        };
+        let envelope: IceWsMessage = serde_json::from_str(&text).unwrap();
+        assert!(
+            matches!(&envelope, IceWsMessage::Candidate(c) if c.candidate == cand.candidate),
+            "expected Candidate with the same string, got {envelope:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn ws_ice_sends_done_when_gathering_ends() {
+        let (tx, rx) = mpsc::channel::<Option<IceCandidate>>(4);
+        let shared_rx = Arc::new(std::sync::Mutex::new(Some(rx)));
+        tx.send(None).await.unwrap(); // None = ICE gathering complete
+        drop(tx);
+
+        let mut mock = MockPeerOps::new();
+        mock.expect_subscribe_ice_candidates()
+            .returning(move || shared_rx.lock().unwrap().take().unwrap());
+
+        let addr = spawn_ws_server(mock).await;
+        let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/ice"))
+            .await
+            .unwrap();
+        let (_, mut ws_rx) = ws.split();
+
+        let msg = tokio::time::timeout(Duration::from_secs(2), ws_rx.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let text = match msg {
+            WsMsg::Text(t) => t.to_string(),
+            other => panic!("expected text frame, got {other:?}"),
+        };
+        let envelope: IceWsMessage = serde_json::from_str(&text).unwrap();
+        assert!(
+            matches!(envelope, IceWsMessage::Done),
+            "expected Done, got {envelope:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn ws_ice_accepts_candidate_from_browser() {
+        // Keep _ice_tx alive (named binding) so the ice_rx channel stays open and the
+        // server loop does not exit via the Done path before the browser message arrives.
+        let (_ice_tx, rx) = mpsc::channel::<Option<IceCandidate>>(1);
+        let shared_rx = Arc::new(std::sync::Mutex::new(Some(rx)));
+
+        let (verified_tx, verified_rx) = oneshot::channel::<IceCandidate>();
+        let verified_tx = Arc::new(std::sync::Mutex::new(Some(verified_tx)));
+
+        let mut mock = MockPeerOps::new();
+        mock.expect_subscribe_ice_candidates()
+            .returning(move || shared_rx.lock().unwrap().take().unwrap());
+        mock.expect_add_ice_candidate()
+            .return_once(move |c| {
+                let _ = verified_tx.lock().unwrap().take().unwrap().send(c);
+                Ok(())
+            });
+
+        let addr = spawn_ws_server(mock).await;
+        let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/ice"))
+            .await
+            .unwrap();
+        let (mut ws_tx, _) = ws.split();
+
+        let outgoing = IceWsMessage::Candidate(IceCandidate {
+            candidate: "candidate:1 1 UDP 2130706431 10.0.0.1 9999 typ host".to_string(),
+            sdp_mid: Some("0".to_string()),
+            sdp_mline_index: Some(0),
+        });
+        ws_tx
+            .send(WsMsg::Text(serde_json::to_string(&outgoing).unwrap().into()))
+            .await
+            .unwrap();
+
+        let received = tokio::time::timeout(Duration::from_secs(2), verified_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(received.candidate.contains("10.0.0.1"));
     }
 }
