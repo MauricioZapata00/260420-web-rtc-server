@@ -17,7 +17,7 @@ impl AppConfig {
         let bind_addr = std::env::var("BIND_ADDR")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or_else(|| "0.0.0.0:3000".parse().unwrap());
+            .unwrap_or_else(|| "127.0.0.1:3000".parse().unwrap());
         let shutdown_timeout = std::env::var("SHUTDOWN_TIMEOUT_SECS")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
@@ -83,7 +83,7 @@ mod tests {
         let config = AppConfig::from_env();
         assert_eq!(
             config.bind_addr,
-            "0.0.0.0:3000".parse::<SocketAddr>().unwrap()
+            "127.0.0.1:3000".parse::<SocketAddr>().unwrap()
         );
     }
 
