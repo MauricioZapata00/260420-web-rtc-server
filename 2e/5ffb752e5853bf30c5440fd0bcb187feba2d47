@@ -1,0 +1,28 @@
+src/server/mod.rs
+  s_4340836e71d729::t_fcb9e164ba91c1 20
+  s_4340836e71d729::t_57b64f12bf7309 86
+README.md
+  h_59c4fc23a18bb9 32,102,110,210
+  s_4340836e71d729::t_dc2ac772011382 3-4,12-13,16,25,27-31,33-101,103-109,111-176,182,189,199,201-202,207,209,211-213,215-216,218,220-225,228-234,237,239-241,243,245-247,249-291,293,296-297,300-303,305-312,314-336,339-340,343-344,347-359,361,369
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "2e5ffb752e5853bf30c5440fd0bcb187feba2d47",
+  "prompts": {},
+  "humans": {
+    "h_59c4fc23a18bb9": {
+      "author": "maucontreras_meli <mauricio.contreras@mercadolibre.com.co>"
+    }
+  },
+  "sessions": {
+    "s_4340836e71d729": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a418aab4-2f0f-4f0c-b2da-147e20e0722a",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "maucontreras_meli <mauricio.contreras@mercadolibre.com.co>"
+    }
+  }
+}
