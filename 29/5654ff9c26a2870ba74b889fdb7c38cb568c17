@@ -1,0 +1,41 @@
+src/webrtc/peer.rs
+  s_4340836e71d729::t_5fe45da200e436 324-366
+  s_4340836e71d729::t_d2ece764c5a162 217-220
+  s_4340836e71d729::t_d7c22fd89cf14d 41
+  s_4340836e71d729::t_a5245e5c9cb258 164
+  s_4340836e71d729::t_d73af9f639263c 44-73
+src/session/registry.rs
+  s_4340836e71d729::t_e5f5fcfbf35488 50-51
+  s_4340836e71d729::t_34332e57384354 7
+  s_4340836e71d729::t_d927df13e8712a 160
+  s_4340836e71d729::t_4c93522b2c8ac6 265-394
+  s_4340836e71d729::t_a6f128ab369657 14
+  s_4340836e71d729::t_29c0ecf2047cf0 137-154
+src/signaling/mod.rs
+  s_4340836e71d729::t_8caa60962ea0bd 2
+src/server/mod.rs
+  s_4340836e71d729::t_19aa10968c1389 5
+  s_4340836e71d729::t_181ef92227d15d 31
+src/signaling/handlers.rs
+  s_4340836e71d729::t_ed5b0937f8d13a 166-167
+  s_4340836e71d729::t_3ae20500e0c026 249-250,261
+  s_4340836e71d729::t_b0014789c3c698 196-197,207
+  s_4340836e71d729::t_ce40b4b4ff6b34 128-131
+  s_4340836e71d729::t_c542bb3d3fe504 56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "295654ff9c26a2870ba74b889fdb7c38cb568c17",
+  "prompts": {},
+  "sessions": {
+    "s_4340836e71d729": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a418aab4-2f0f-4f0c-b2da-147e20e0722a",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "maucontreras_meli <mauricio.contreras@mercadolibre.com.co>"
+    }
+  }
+}
