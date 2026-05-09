@@ -10,6 +10,9 @@ use ::webrtc::{
         configuration::RTCConfiguration, sdp::session_description::RTCSessionDescription,
         RTCPeerConnection,
     },
+    track::track_local::{
+        track_local_static_rtp::TrackLocalStaticRTP, TrackLocalWriter,
+    },
 };
 
 use crate::{
@@ -21,6 +24,7 @@ use crate::{
 #[async_trait::async_trait]
 pub trait PeerOps: Send + Sync {
     async fn set_remote_description(&self, sdp: SdpOffer) -> Result<(), AppError>;
+    async fn set_remote_answer(&self, sdp: SdpAnswer) -> Result<(), AppError>;
     async fn create_answer(&self) -> Result<SdpAnswer, AppError>;
     async fn add_ice_candidate(&self, candidate: IceCandidate) -> Result<(), AppError>;
     async fn on_connection_state_change(&self) -> Result<(), AppError>;
@@ -29,7 +33,11 @@ pub trait PeerOps: Send + Sync {
         peer_id: PeerId,
         registry: Arc<SessionRegistry>,
     ) -> Result<(), AppError>;
-    async fn on_track(&self) -> Result<(), AppError>;
+    async fn on_track(
+        &self,
+        peer_id: PeerId,
+        registry: Arc<SessionRegistry>,
+    ) -> Result<(), AppError>;
 }
 
 pub struct WebRtcPeer {
@@ -64,6 +72,15 @@ impl PeerOps for WebRtcPeer {
             .map_err(|e| AppError::SdpParseFailed(e.to_string()))?;
         self.pc
             .set_remote_description(offer)
+            .await
+            .map_err(|e| AppError::SdpParseFailed(e.to_string()))
+    }
+
+    async fn set_remote_answer(&self, sdp: SdpAnswer) -> Result<(), AppError> {
+        let answer = RTCSessionDescription::answer(sdp.sdp)
+            .map_err(|e| AppError::SdpParseFailed(e.to_string()))?;
+        self.pc
+            .set_remote_description(answer)
             .await
             .map_err(|e| AppError::SdpParseFailed(e.to_string()))
     }
@@ -108,11 +125,14 @@ impl PeerOps for WebRtcPeer {
         peer_id: PeerId,
         registry: Arc<SessionRegistry>,
     ) -> Result<(), AppError> {
+        let pc = Arc::clone(&self.pc);
         self.pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
             let registry = Arc::clone(&registry);
+            let pc = Arc::clone(&pc);
             tracing::info!("data channel opened: {}", dc.label());
             Box::pin(async move {
                 registry.set_data_channel(peer_id, Arc::clone(&dc));
+                registry.set_peer_connection(peer_id, pc);
 
                 let registry_msg = Arc::clone(&registry);
                 dc.on_message(Box::new(move |msg: DataChannelMessage| {
@@ -140,10 +160,51 @@ impl PeerOps for WebRtcPeer {
         Ok(())
     }
 
-    async fn on_track(&self) -> Result<(), AppError> {
-        self.pc.on_track(Box::new(|_track, _receiver, _transceiver| {
-            tracing::info!("track received");
-            Box::pin(async {})
+    async fn on_track(
+        &self,
+        peer_id: PeerId,
+        registry: Arc<SessionRegistry>,
+    ) -> Result<(), AppError> {
+        self.pc.on_track(Box::new(move |track, _receiver, _transceiver| {
+            let registry = Arc::clone(&registry);
+            Box::pin(async move {
+                tracing::info!(
+                    "track received: {}/{}",
+                    track.kind(),
+                    track.codec().capability.mime_type
+                );
+
+                let local_track = Arc::new(TrackLocalStaticRTP::new(
+                    track.codec().capability.clone(),
+                    track.id(),
+                    track.stream_id(),
+                ));
+
+                let senders = match registry
+                    .add_track_to_all(peer_id, Arc::clone(&local_track))
+                    .await
+                {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::error!("add_track_to_all failed: {e}");
+                        return;
+                    }
+                };
+
+                tokio::spawn(async move {
+                    loop {
+                        match track.read_rtp().await {
+                            Ok((pkt, _attr)) => {
+                                if local_track.write_rtp(&pkt).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    registry.remove_tracks(senders).await;
+                });
+            })
         }));
         Ok(())
     }
@@ -165,7 +226,8 @@ mod tests {
     #[serial]
     async fn on_track_registers_ok() {
         let peer = WebRtcPeer::new().await.unwrap();
-        assert!(peer.on_track().await.is_ok());
+        let registry = Arc::new(SessionRegistry::new());
+        assert!(peer.on_track(PeerId::new(), registry).await.is_ok());
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -184,6 +246,18 @@ mod tests {
             .returning(|_| Err(AppError::SdpParseFailed("fail".to_string())));
         let result = mock
             .set_remote_description(SdpOffer { sdp: "bad".to_string() })
+            .await;
+        assert!(matches!(result, Err(AppError::SdpParseFailed(_))));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn set_remote_answer_error_via_mock() {
+        let mut mock = MockPeerOps::new();
+        mock.expect_set_remote_answer()
+            .returning(|_| Err(AppError::SdpParseFailed("fail".to_string())));
+        let result = mock
+            .set_remote_answer(SdpAnswer { sdp: "bad".to_string() })
             .await;
         assert!(matches!(result, Err(AppError::SdpParseFailed(_))));
     }
@@ -222,6 +296,18 @@ mod tests {
             .returning(|_, _| Err(AppError::SignalingError("fail".to_string())));
         let result = mock
             .on_data_channel(PeerId::new(), Arc::new(SessionRegistry::new()))
+            .await;
+        assert!(matches!(result, Err(AppError::SignalingError(_))));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn on_track_error_via_mock() {
+        let mut mock = MockPeerOps::new();
+        mock.expect_on_track()
+            .returning(|_, _| Err(AppError::SignalingError("fail".to_string())));
+        let result = mock
+            .on_track(PeerId::new(), Arc::new(SessionRegistry::new()))
             .await;
         assert!(matches!(result, Err(AppError::SignalingError(_))));
     }

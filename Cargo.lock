@@ -2728,6 +2728,7 @@ dependencies = [
  "async-trait",
  "axum",
  "dashmap",
+ "futures-util",
  "http-body-util",
  "mockall",
  "schemars",

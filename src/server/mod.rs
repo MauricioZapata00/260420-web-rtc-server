@@ -48,7 +48,10 @@ mod tests {
     fn default_bind_addr() {
         unsafe { std::env::remove_var("BIND_ADDR") };
         let config = AppConfig::from_env();
-        assert_eq!(config.bind_addr, "0.0.0.0:3000".parse::<SocketAddr>().unwrap());
+        assert_eq!(
+            config.bind_addr,
+            "0.0.0.0:3000".parse::<SocketAddr>().unwrap()
+        );
     }
 
     #[test]
@@ -56,7 +59,10 @@ mod tests {
     fn custom_bind_addr() {
         unsafe { std::env::set_var("BIND_ADDR", "127.0.0.1:8080") };
         let config = AppConfig::from_env();
-        assert_eq!(config.bind_addr, "127.0.0.1:8080".parse::<SocketAddr>().unwrap());
+        assert_eq!(
+            config.bind_addr,
+            "127.0.0.1:8080".parse::<SocketAddr>().unwrap()
+        );
         unsafe { std::env::remove_var("BIND_ADDR") };
     }
 }

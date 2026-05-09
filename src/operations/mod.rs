@@ -4,12 +4,16 @@ use crate::types::{AppError, IceCandidate, SdpOffer};
 
 pub fn parse_sdp_offer(raw: &str) -> Result<SdpOffer, AppError> {
     if raw.is_empty() {
-        return Err(AppError::SdpParseFailed("SDP must not be empty".to_string()));
+        return Err(AppError::SdpParseFailed(
+            "SDP must not be empty".to_string(),
+        ));
     }
     let mut cursor = std::io::Cursor::new(raw.as_bytes());
     sdp::SessionDescription::unmarshal(&mut cursor)
         .map_err(|e| AppError::SdpParseFailed(e.to_string()))?;
-    Ok(SdpOffer { sdp: raw.to_string() })
+    Ok(SdpOffer {
+        sdp: raw.to_string(),
+    })
 }
 
 pub fn validate_ice_candidate(candidate: &IceCandidate) -> Result<(), AppError> {

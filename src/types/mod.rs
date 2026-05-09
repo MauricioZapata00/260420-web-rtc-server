@@ -45,13 +45,23 @@ pub struct IceCandidate {
     pub sdp_mline_index: Option<u16>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+pub enum IceWsMessage {
+    Candidate(IceCandidate),
+    Offer(SdpOffer),
+    Answer(SdpAnswer),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn sdp_offer_json_round_trip() {
-        let offer = SdpOffer { sdp: "v=0\r\n".to_string() };
+        let offer = SdpOffer {
+            sdp: "v=0\r\n".to_string(),
+        };
         let json = serde_json::to_string(&offer).unwrap();
         let decoded: SdpOffer = serde_json::from_str(&json).unwrap();
         assert_eq!(offer.sdp, decoded.sdp);
@@ -59,7 +69,9 @@ mod tests {
 
     #[test]
     fn sdp_answer_json_round_trip() {
-        let answer = SdpAnswer { sdp: "v=0\r\n".to_string() };
+        let answer = SdpAnswer {
+            sdp: "v=0\r\n".to_string(),
+        };
         let json = serde_json::to_string(&answer).unwrap();
         let decoded: SdpAnswer = serde_json::from_str(&json).unwrap();
         assert_eq!(answer.sdp, decoded.sdp);
@@ -118,7 +130,10 @@ mod tests {
     #[test]
     fn offer_response_json_round_trip() {
         let id = PeerId::new();
-        let resp = OfferResponse { peer_id: id, sdp: "v=0\r\n".to_string() };
+        let resp = OfferResponse {
+            peer_id: id,
+            sdp: "v=0\r\n".to_string(),
+        };
         let json = serde_json::to_string(&resp).unwrap();
         let decoded: OfferResponse = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.peer_id, id);
@@ -126,9 +141,45 @@ mod tests {
     }
 
     #[test]
+    fn ice_ws_message_candidate_round_trip() {
+        let c = IceCandidate {
+            candidate: "candidate:1 1 UDP 1 192.168.1.1 1234 typ host".to_string(),
+            sdp_mid: Some("0".to_string()),
+            sdp_mline_index: Some(0),
+        };
+        let msg = IceWsMessage::Candidate(c);
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
+        assert_eq!(json["type"], "candidate");
+    }
+
+    #[test]
+    fn ice_ws_message_offer_round_trip() {
+        let msg = IceWsMessage::Offer(SdpOffer {
+            sdp: "v=0\r\n".to_string(),
+        });
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
+        assert_eq!(json["type"], "offer");
+    }
+
+    #[test]
+    fn ice_ws_message_answer_round_trip() {
+        let msg = IceWsMessage::Answer(SdpAnswer {
+            sdp: "v=0\r\n".to_string(),
+        });
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
+        assert_eq!(json["type"], "answer");
+    }
+
+    #[test]
     fn chat_message_json_includes_from_and_text() {
         let id = PeerId::new();
-        let msg = ChatMessage { from: id, text: "hello".to_string() };
+        let msg = ChatMessage {
+            from: id,
+            text: "hello".to_string(),
+        };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
         assert_eq!(json["text"], "hello");

@@ -1,6 +1,7 @@
 # WebRTC Server
 
-A WebRTC signaling server written in Rust. Handles SDP offer/answer exchange over HTTP and ICE candidate trickle over WebSocket.
+A WebRTC signaling server written in Rust. Handles SDP offer/answer exchange over HTTP and ICE candidate trickle over
+WebSocket.
 
 ## Running
 
@@ -22,10 +23,10 @@ RUST_LOG=web_rtc_server=info cargo run
 
 ## API
 
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/offer` | Submit an SDP offer, receive an SDP answer |
-| `GET` | `/ws/ice` | WebSocket — trickle ICE candidates |
+| Method | Path      | Description                                |
+|--------|-----------|--------------------------------------------|
+| `POST` | `/offer`  | Submit an SDP offer, receive an SDP answer |
+| `GET`  | `/ws/ice` | WebSocket — trickle ICE candidates         |
 
 ## ICE / STUN / TURN configuration
 
@@ -38,7 +39,8 @@ stun:stun.l.google.com:19302
 stun:stun1.l.google.com:19302
 ```
 
-STUN is enough for peers on standard NATs (~80–85% of users). Peers behind a **symmetric NAT** require a TURN relay to connect.
+STUN is enough for peers on standard NATs (~80–85% of users). Peers behind a **symmetric NAT** require a TURN relay to
+connect.
 
 ### Adding a TURN server
 
@@ -82,7 +84,8 @@ Not suitable for production — no SLA and shared bandwidth.
 
 #### Option 2 — Twilio Network Traversal Service (production)
 
-Twilio provides managed STUN/TURN with an SLA and short-lived credentials generated via API (credentials expire, so they are never hardcoded). Suitable for production workloads with a predictable cost model.
+Twilio provides managed STUN/TURN with an SLA and short-lived credentials generated via API (credentials expire, so they
+are never hardcoded). Suitable for production workloads with a predictable cost model.
 
 #### Option 3 — Self-hosted `coturn` (recommended for production)
 
@@ -113,7 +116,8 @@ systemctl enable --now coturn
 
 Open firewall ports `3478/udp`, `3478/tcp`, `5349/tcp`, and the relay port range (default `49152–65535/udp`).
 
-**Sizing for 30 users (SFU topology):** a 2 vCPU / 2 GB RAM VM handles the CPU easily. Size the VM's network bandwidth to the expected peak media bitrate × number of users who hit the TURN relay (typically 15–20% of sessions).
+**Sizing for 30 users (SFU topology):** a 2 vCPU / 2 GB RAM VM handles the CPU easily. Size the VM's network bandwidth
+to the expected peak media bitrate × number of users who hit the TURN relay (typically 15–20% of sessions).
 
 ## Running tests
 
@@ -121,4 +125,5 @@ Open firewall ports `3478/udp`, `3478/tcp`, `5349/tcp`, and the relay port range
 cargo test -- --test-threads=1
 ```
 
-The `--test-threads=1` flag is required for the WebRTC integration tests, which share a single ICE agent and fail under parallel execution.
+The `--test-threads=1` flag is required for the WebRTC integration tests, which share a single ICE agent and fail under
+parallel execution.

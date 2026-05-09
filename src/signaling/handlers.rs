@@ -1,20 +1,21 @@
 use std::sync::Arc;
 
 use axum::{
+    Json, Router,
     extract::{
+        Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
-        State,
     },
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
-use tokio::sync::oneshot;
+use futures_util::{SinkExt, StreamExt};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     operations::{parse_sdp_offer, validate_ice_candidate},
     session::{PeerHandle, SessionRegistry},
-    types::{AppError, IceCandidate, OfferResponse, PeerId, SdpOffer},
+    types::{AppError, IceCandidate, IceWsMessage, OfferResponse, PeerId, SdpOffer},
     webrtc::peer::PeerOps,
 };
 
@@ -48,38 +49,103 @@ pub async fn offer<P: PeerOps + 'static>(
 
     let peer_id = PeerId::new();
     let (disconnect_tx, _) = oneshot::channel::<()>();
-    state.registry.register(peer_id, PeerHandle { data_channel: None, disconnect_tx });
-    state.peer.on_data_channel(peer_id, Arc::clone(&state.registry)).await?;
+    state.registry.register(
+        peer_id,
+        PeerHandle {
+            data_channel: None,
+            peer_connection: None,
+            ws_tx: None,
+            disconnect_tx,
+        },
+    );
+    state
+        .peer
+        .on_data_channel(peer_id, Arc::clone(&state.registry))
+        .await?;
+    state
+        .peer
+        .on_track(peer_id, Arc::clone(&state.registry))
+        .await?;
 
-    Ok(Json(OfferResponse { peer_id, sdp: answer.sdp }))
+    Ok(Json(OfferResponse {
+        peer_id,
+        sdp: answer.sdp,
+    }))
+}
+
+#[derive(serde::Deserialize)]
+pub struct WsQuery {
+    peer_id: Option<PeerId>,
 }
 
 pub async fn ws_ice<P: PeerOps + 'static>(
     ws: WebSocketUpgrade,
+    Query(query): Query<WsQuery>,
     State(state): State<AppState<P>>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_ice_socket(socket, state.peer))
+    ws.on_upgrade(move |socket| {
+        handle_ice_socket(socket, state.peer, state.registry, query.peer_id)
+    })
 }
 
-async fn handle_ice_socket<P: PeerOps>(mut socket: WebSocket, peer: Arc<P>) {
-    while let Some(msg) = socket.recv().await {
-        let msg = match msg {
-            Ok(m) => m,
-            Err(_) => break,
-        };
-        let text = match msg {
-            Message::Text(t) => t,
-            Message::Close(_) => break,
-            _ => continue,
-        };
-        let Ok(candidate) = serde_json::from_str::<IceCandidate>(&text) else {
-            continue;
-        };
-        if validate_ice_candidate(&candidate).is_err() {
-            continue;
-        }
-        if peer.add_ice_candidate(candidate).await.is_err() {
-            break;
+async fn handle_ice_socket<P: PeerOps>(
+    socket: WebSocket,
+    peer: Arc<P>,
+    registry: Arc<SessionRegistry>,
+    peer_id: Option<PeerId>,
+) {
+    let (mut sink, mut stream) = socket.split();
+    let (ws_tx, mut ws_rx) = mpsc::unbounded_channel::<IceWsMessage>();
+
+    if let Some(id) = peer_id {
+        registry.set_ws_sender(id, ws_tx);
+    }
+
+    loop {
+        tokio::select! {
+            msg = stream.next() => {
+                let msg = match msg {
+                    Some(Ok(m)) => m,
+                    _ => break,
+                };
+                let text = match msg {
+                    Message::Text(t) => t,
+                    Message::Close(_) => break,
+                    _ => continue,
+                };
+
+                // Try full IceWsMessage envelope first, fall back to bare IceCandidate.
+                if let Ok(envelope) = serde_json::from_str::<IceWsMessage>(&text) {
+                    match envelope {
+                        IceWsMessage::Candidate(c) => {
+                            if validate_ice_candidate(&c).is_ok() {
+                                if peer.add_ice_candidate(c).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        IceWsMessage::Answer(a) => {
+                            if peer.set_remote_answer(a).await.is_err() {
+                                break;
+                            }
+                        }
+                        IceWsMessage::Offer(_) => {}
+                    }
+                } else if let Ok(candidate) = serde_json::from_str::<IceCandidate>(&text) {
+                    if validate_ice_candidate(&candidate).is_ok() {
+                        if peer.add_ice_candidate(candidate).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+            outgoing = ws_rx.recv() => {
+                let Some(msg) = outgoing else { break };
+                let Ok(json) = serde_json::to_string(&msg) else { continue };
+                if sink.send(Message::Text(json.into())).await.is_err() {
+                    break;
+                }
+            }
         }
     }
 }
@@ -108,7 +174,10 @@ mod tests {
     }
 
     fn offer_request(sdp: &str) -> Request<Body> {
-        let body = serde_json::to_string(&SdpOffer { sdp: sdp.to_string() }).unwrap();
+        let body = serde_json::to_string(&SdpOffer {
+            sdp: sdp.to_string(),
+        })
+        .unwrap();
         Request::builder()
             .method("POST")
             .uri("/offer")
@@ -122,11 +191,18 @@ mod tests {
     async fn offer_returns_peer_id_and_sdp() {
         let mut mock = MockPeerOps::new();
         mock.expect_set_remote_description().returning(|_| Ok(()));
-        mock.expect_create_answer()
-            .returning(|| Ok(SdpAnswer { sdp: VALID_SDP.to_string() }));
+        mock.expect_create_answer().returning(|| {
+            Ok(SdpAnswer {
+                sdp: VALID_SDP.to_string(),
+            })
+        });
         mock.expect_on_data_channel().returning(|_, _| Ok(()));
+        mock.expect_on_track().returning(|_, _| Ok(()));
 
-        let response = build_router(mock).oneshot(offer_request(VALID_SDP)).await.unwrap();
+        let response = build_router(mock)
+            .oneshot(offer_request(VALID_SDP))
+            .await
+            .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
@@ -142,7 +218,10 @@ mod tests {
         mock.expect_set_remote_description()
             .returning(|_| Err(AppError::PeerConnectionFailed("fail".to_string())));
 
-        let response = build_router(mock).oneshot(offer_request(VALID_SDP)).await.unwrap();
+        let response = build_router(mock)
+            .oneshot(offer_request(VALID_SDP))
+            .await
+            .unwrap();
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
@@ -153,6 +232,28 @@ mod tests {
         let mock = MockPeerOps::new();
 
         let response = build_router(mock).oneshot(offer_request("")).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn offer_on_track_error_propagates() {
+        let mut mock = MockPeerOps::new();
+        mock.expect_set_remote_description().returning(|_| Ok(()));
+        mock.expect_create_answer().returning(|| {
+            Ok(SdpAnswer {
+                sdp: VALID_SDP.to_string(),
+            })
+        });
+        mock.expect_on_data_channel().returning(|_, _| Ok(()));
+        mock.expect_on_track()
+            .returning(|_, _| Err(AppError::SignalingError("fail".to_string())));
+
+        let response = build_router(mock)
+            .oneshot(offer_request(VALID_SDP))
+            .await
+            .unwrap();
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
