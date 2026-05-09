@@ -38,6 +38,39 @@ pub trait PeerOps: Send + Sync {
         peer_id: PeerId,
         registry: Arc<SessionRegistry>,
     ) -> Result<(), AppError>;
+    fn peer_connection(&self) -> Arc<RTCPeerConnection>;
+}
+
+fn make_broadcast_payload(peer_id: PeerId, text: String) -> String {
+    serde_json::to_string(&ChatMessage { from: peer_id, text }).unwrap_or_default()
+}
+
+async fn handle_data_channel_open(
+    peer_id: PeerId,
+    dc: Arc<RTCDataChannel>,
+    registry: Arc<SessionRegistry>,
+) {
+    registry.set_data_channel(peer_id, Arc::clone(&dc));
+
+    let registry_msg = Arc::clone(&registry);
+    dc.on_message(Box::new(move |msg: DataChannelMessage| {
+        let registry = Arc::clone(&registry_msg);
+        Box::pin(async move {
+            if msg.is_string {
+                let text = String::from_utf8_lossy(&msg.data).to_string();
+                let json = make_broadcast_payload(peer_id, text);
+                registry.broadcast_text(peer_id, &json);
+            }
+        })
+    }));
+
+    let registry_close = Arc::clone(&registry);
+    dc.on_close(Box::new(move || {
+        let registry = Arc::clone(&registry_close);
+        Box::pin(async move {
+            registry.deregister(peer_id);
+        })
+    }));
 }
 
 pub struct WebRtcPeer {
@@ -125,37 +158,10 @@ impl PeerOps for WebRtcPeer {
         peer_id: PeerId,
         registry: Arc<SessionRegistry>,
     ) -> Result<(), AppError> {
-        let pc = Arc::clone(&self.pc);
         self.pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
             let registry = Arc::clone(&registry);
-            let pc = Arc::clone(&pc);
             tracing::info!("data channel opened: {}", dc.label());
-            Box::pin(async move {
-                registry.set_data_channel(peer_id, Arc::clone(&dc));
-                registry.set_peer_connection(peer_id, pc);
-
-                let registry_msg = Arc::clone(&registry);
-                dc.on_message(Box::new(move |msg: DataChannelMessage| {
-                    let registry = Arc::clone(&registry_msg);
-                    Box::pin(async move {
-                        if msg.is_string {
-                            let text = String::from_utf8_lossy(&msg.data).to_string();
-                            let json =
-                                serde_json::to_string(&ChatMessage { from: peer_id, text })
-                                    .unwrap_or_default();
-                            registry.broadcast_text(peer_id, &json);
-                        }
-                    })
-                }));
-
-                let registry_close = Arc::clone(&registry);
-                dc.on_close(Box::new(move || {
-                    let registry = Arc::clone(&registry_close);
-                    Box::pin(async move {
-                        registry.deregister(peer_id);
-                    })
-                }));
-            })
+            Box::pin(handle_data_channel_open(peer_id, dc, registry))
         }));
         Ok(())
     }
@@ -207,6 +213,10 @@ impl PeerOps for WebRtcPeer {
             })
         }));
         Ok(())
+    }
+
+    fn peer_connection(&self) -> Arc<RTCPeerConnection> {
+        Arc::clone(&self.pc)
     }
 }
 
@@ -310,5 +320,48 @@ mod tests {
             .on_track(PeerId::new(), Arc::new(SessionRegistry::new()))
             .await;
         assert!(matches!(result, Err(AppError::SignalingError(_))));
+    }
+
+    #[test]
+    fn message_handler_encodes_from_peer_id_in_json() {
+        let peer_id = PeerId::new();
+        let json = make_broadcast_payload(peer_id, "hello".to_string());
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["text"], "hello");
+        let from: PeerId = serde_json::from_value(parsed["from"].clone()).unwrap();
+        assert_eq!(from, peer_id, "from field must match the sending peer's id");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn on_data_channel_open_registers_dc_in_registry() {
+        use crate::session::PeerHandle;
+        use tokio::sync::oneshot;
+        use ::webrtc::{api::APIBuilder, peer_connection::configuration::RTCConfiguration};
+
+        let api = APIBuilder::new().build();
+        let pc = Arc::new(api.new_peer_connection(RTCConfiguration::default()).await.unwrap());
+        let dc = pc.create_data_channel("test", None).await.unwrap();
+
+        let registry = Arc::new(SessionRegistry::new());
+        let peer_id = PeerId::new();
+
+        let (disconnect_tx, _) = oneshot::channel();
+        registry.register(
+            peer_id,
+            PeerHandle {
+                data_channel: None,
+                peer_connection: Some(Arc::clone(&pc)),
+                ws_tx: None,
+                disconnect_tx,
+            },
+        );
+
+        handle_data_channel_open(peer_id, dc, Arc::clone(&registry)).await;
+
+        assert!(
+            registry.get_data_channel(peer_id).is_some(),
+            "set_data_channel must be invoked once when the data channel opens"
+        );
     }
 }

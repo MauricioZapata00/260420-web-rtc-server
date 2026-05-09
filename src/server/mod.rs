@@ -2,7 +2,7 @@ use std::{net::SocketAddr, sync::Arc};
 
 use crate::{
     session::SessionRegistry,
-    signaling::handlers::{self, AppState},
+    signaling::{AppState, router as signaling_router},
     types::AppError,
     webrtc::peer::WebRtcPeer,
 };
@@ -28,7 +28,7 @@ pub async fn run() -> Result<(), AppError> {
         peer: Arc::new(peer),
         registry: Arc::new(SessionRegistry::new()),
     };
-    let router = handlers::router::<WebRtcPeer>().with_state(state);
+    let router = signaling_router::<WebRtcPeer>().with_state(state);
     let listener = tokio::net::TcpListener::bind(config.bind_addr)
         .await
         .map_err(|e| AppError::SignalingError(e.to_string()))?;

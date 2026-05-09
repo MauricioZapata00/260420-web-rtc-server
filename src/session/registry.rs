@@ -4,14 +4,14 @@ use std::sync::Arc;
 
 use ::webrtc::{
     data_channel::RTCDataChannel,
-    peer_connection::RTCPeerConnection,
+    peer_connection::{sdp::session_description::RTCSessionDescription, RTCPeerConnection},
     rtp_transceiver::rtp_sender::RTCRtpSender,
     track::track_local::{TrackLocal, track_local_static_rtp::TrackLocalStaticRTP},
 };
 use dashmap::DashMap;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::types::{AppError, IceWsMessage, PeerId, SdpOffer};
+use crate::types::{AppError, IceWsMessage, PeerId, SdpAnswer, SdpOffer};
 
 pub struct PeerHandle {
     pub data_channel: Option<Arc<RTCDataChannel>>,
@@ -47,10 +47,8 @@ impl SessionRegistry {
         }
     }
 
-    pub fn set_peer_connection(&self, id: PeerId, pc: Arc<RTCPeerConnection>) {
-        if let Some(mut entry) = self.peers.get_mut(&id) {
-            entry.peer_connection = Some(pc);
-        }
+    pub fn get_data_channel(&self, id: PeerId) -> Option<Arc<RTCDataChannel>> {
+        self.peers.get(&id).and_then(|e| e.data_channel.as_ref().map(Arc::clone))
     }
 
     pub fn set_ws_sender(&self, id: PeerId, tx: mpsc::UnboundedSender<IceWsMessage>) {
@@ -136,11 +134,30 @@ impl SessionRegistry {
             let _ = pc.remove_track(&sender).await;
         }
     }
+
+    pub async fn apply_remote_answer(&self, id: PeerId, sdp: SdpAnswer) -> Result<(), AppError> {
+        let pc: Option<Arc<RTCPeerConnection>> = self
+            .peers
+            .get(&id)
+            .and_then(|e| e.peer_connection.as_ref().map(Arc::clone));
+
+        let pc = pc.ok_or_else(|| {
+            AppError::SignalingError("peer not found or missing connection".to_string())
+        })?;
+
+        let answer = RTCSessionDescription::answer(sdp.sdp)
+            .map_err(|e| AppError::SdpParseFailed(e.to_string()))?;
+
+        pc.set_remote_description(answer)
+            .await
+            .map_err(|e| AppError::SdpParseFailed(e.to_string()))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     fn make_handle() -> PeerHandle {
         let (disconnect_tx, _) = oneshot::channel();
@@ -244,5 +261,135 @@ mod tests {
     async fn remove_tracks_with_empty_list_is_noop() {
         let registry = SessionRegistry::new();
         registry.remove_tracks(vec![]).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn add_track_to_all_fans_out_to_receivers_skips_publisher() {
+        use ::webrtc::{
+            api::APIBuilder,
+            peer_connection::configuration::RTCConfiguration,
+            rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
+            track::track_local::track_local_static_rtp::TrackLocalStaticRTP,
+        };
+
+        let api = APIBuilder::new().build();
+        let config = RTCConfiguration::default();
+        let publisher_pc = Arc::new(api.new_peer_connection(config.clone()).await.unwrap());
+        let receiver_pc = Arc::new(api.new_peer_connection(config).await.unwrap());
+
+        let registry = SessionRegistry::new();
+        let publisher = PeerId::new();
+        let receiver = PeerId::new();
+
+        let (tx1, _) = oneshot::channel();
+        registry.register(
+            publisher,
+            PeerHandle {
+                data_channel: None,
+                peer_connection: Some(Arc::clone(&publisher_pc)),
+                ws_tx: None,
+                disconnect_tx: tx1,
+            },
+        );
+        let (tx2, _) = oneshot::channel();
+        registry.register(
+            receiver,
+            PeerHandle {
+                data_channel: None,
+                peer_connection: Some(Arc::clone(&receiver_pc)),
+                ws_tx: None,
+                disconnect_tx: tx2,
+            },
+        );
+
+        let track = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "audio/opus".to_string(),
+                ..Default::default()
+            },
+            "audio".to_string(),
+            "stream".to_string(),
+        ));
+
+        let senders = registry.add_track_to_all(publisher, track).await.unwrap();
+        assert_eq!(senders.len(), 1, "only the receiver should receive the track");
+        assert_eq!(senders[0].0, receiver, "sender entry must reference the receiver peer");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn remove_tracks_removes_senders_from_correct_connections() {
+        use ::webrtc::{
+            api::APIBuilder,
+            peer_connection::configuration::RTCConfiguration,
+            rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
+            track::track_local::track_local_static_rtp::TrackLocalStaticRTP,
+        };
+
+        let api = APIBuilder::new().build();
+        let config = RTCConfiguration::default();
+        let publisher_pc = Arc::new(api.new_peer_connection(config.clone()).await.unwrap());
+        let receiver_pc = Arc::new(api.new_peer_connection(config).await.unwrap());
+
+        let registry = SessionRegistry::new();
+        let publisher = PeerId::new();
+        let receiver = PeerId::new();
+
+        let (tx1, _) = oneshot::channel();
+        registry.register(
+            publisher,
+            PeerHandle {
+                data_channel: None,
+                peer_connection: Some(Arc::clone(&publisher_pc)),
+                ws_tx: None,
+                disconnect_tx: tx1,
+            },
+        );
+        let (tx2, _) = oneshot::channel();
+        registry.register(
+            receiver,
+            PeerHandle {
+                data_channel: None,
+                peer_connection: Some(Arc::clone(&receiver_pc)),
+                ws_tx: None,
+                disconnect_tx: tx2,
+            },
+        );
+
+        let track = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "audio/opus".to_string(),
+                ..Default::default()
+            },
+            "audio".to_string(),
+            "stream".to_string(),
+        ));
+
+        let senders = registry.add_track_to_all(publisher, track).await.unwrap();
+        assert!(!senders.is_empty());
+        registry.remove_tracks(senders).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn apply_remote_answer_fails_for_unknown_peer() {
+        let registry = SessionRegistry::new();
+        let result = registry
+            .apply_remote_answer(PeerId::new(), SdpAnswer { sdp: "v=0\r\n".to_string() })
+            .await;
+        assert!(matches!(result, Err(AppError::SignalingError(_))));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn apply_remote_answer_fails_for_peer_without_connection() {
+        let registry = SessionRegistry::new();
+        let id = PeerId::new();
+        registry.register(id, make_handle());
+        let result = registry
+            .apply_remote_answer(id, SdpAnswer { sdp: "v=0\r\n".to_string() })
+            .await;
+        assert!(matches!(result, Err(AppError::SignalingError(_))));
     }
 }

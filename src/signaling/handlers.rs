@@ -53,7 +53,7 @@ pub async fn offer<P: PeerOps + 'static>(
         peer_id,
         PeerHandle {
             data_channel: None,
-            peer_connection: None,
+            peer_connection: Some(state.peer.peer_connection()),
             ws_tx: None,
             disconnect_tx,
         },
@@ -125,8 +125,10 @@ async fn handle_ice_socket<P: PeerOps>(
                             }
                         }
                         IceWsMessage::Answer(a) => {
-                            if peer.set_remote_answer(a).await.is_err() {
-                                break;
+                            if let Some(id) = peer_id {
+                                if registry.apply_remote_answer(id, a).await.is_err() {
+                                    break;
+                                }
                             }
                         }
                         IceWsMessage::Offer(_) => {}
@@ -161,6 +163,8 @@ mod tests {
     use serial_test::serial;
     use tower::ServiceExt;
 
+    use ::webrtc::{api::APIBuilder, peer_connection::configuration::RTCConfiguration};
+
     use crate::{types::SdpAnswer, webrtc::peer::MockPeerOps};
 
     const VALID_SDP: &str = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n";
@@ -189,6 +193,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
     async fn offer_returns_peer_id_and_sdp() {
+        let api = APIBuilder::new().build();
+        let pc = Arc::new(api.new_peer_connection(RTCConfiguration::default()).await.unwrap());
         let mut mock = MockPeerOps::new();
         mock.expect_set_remote_description().returning(|_| Ok(()));
         mock.expect_create_answer().returning(|| {
@@ -198,6 +204,7 @@ mod tests {
         });
         mock.expect_on_data_channel().returning(|_, _| Ok(()));
         mock.expect_on_track().returning(|_, _| Ok(()));
+        mock.expect_peer_connection().returning(move || Arc::clone(&pc));
 
         let response = build_router(mock)
             .oneshot(offer_request(VALID_SDP))
@@ -239,6 +246,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
     async fn offer_on_track_error_propagates() {
+        let api = APIBuilder::new().build();
+        let pc = Arc::new(api.new_peer_connection(RTCConfiguration::default()).await.unwrap());
         let mut mock = MockPeerOps::new();
         mock.expect_set_remote_description().returning(|_| Ok(()));
         mock.expect_create_answer().returning(|| {
@@ -249,6 +258,7 @@ mod tests {
         mock.expect_on_data_channel().returning(|_, _| Ok(()));
         mock.expect_on_track()
             .returning(|_, _| Err(AppError::SignalingError("fail".to_string())));
+        mock.expect_peer_connection().returning(move || Arc::clone(&pc));
 
         let response = build_router(mock)
             .oneshot(offer_request(VALID_SDP))
