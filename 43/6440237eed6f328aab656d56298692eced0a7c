@@ -1,0 +1,19 @@
+src/server/mod.rs
+  s_4340836e71d729::t_dad8bbe4132abb 1,12,21-50,52-53,69,101-116
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "436440237eed6f328aab656d56298692eced0a7c",
+  "prompts": {},
+  "sessions": {
+    "s_4340836e71d729": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a418aab4-2f0f-4f0c-b2da-147e20e0722a",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "maucontreras_meli <mauricio.contreras@mercadolibre.com.co>"
+    }
+  }
+}
