@@ -1,0 +1,36 @@
+Cargo.lock
+  ai_agent 2741
+src/types/mod.rs
+  s_4340836e71d729::t_99c831661fa159 52
+  s_4340836e71d729::t_c2c4cdd0f078bf 178-186
+  s_4340836e71d729::t_3014a058ce1e27 41
+Cargo.toml
+  s_4340836e71d729::t_1d12ffe842cbff 26
+src/signaling/handlers.rs
+  s_4340836e71d729::t_0533daaeada58a 303-379,383-418
+  s_4340836e71d729::t_9052800ed9bfee 184-185,187,191-201
+  s_4340836e71d729::t_c3ed2c25ff184e 86,88,97,136,153-166
+  s_4340836e71d729::t_23c4074c60aa66 380-382
+src/webrtc/peer.rs
+  s_4340836e71d729::t_f25e00a9441180 362-385
+  s_4340836e71d729::t_7d9912ab692b50 45
+  s_4340836e71d729::t_8c5d3f1314deff 3-5,10-13,18
+  s_4340836e71d729::t_a79b9665113ce2 229-257
+  s_4340836e71d729::t_d14cffc8ad739f 82,102-105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "b7b7dd43e7d5450c0ed9c4586fd40cce2eafbca5",
+  "prompts": {},
+  "sessions": {
+    "s_4340836e71d729": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a418aab4-2f0f-4f0c-b2da-147e20e0722a",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "maucontreras_meli <mauricio.contreras@mercadolibre.com.co>"
+    }
+  }
+}
